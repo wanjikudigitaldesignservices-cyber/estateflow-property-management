@@ -25,7 +25,9 @@ import {
   Mail,
   ChevronRight,
   Layers,
-  Sparkles
+  History,
+  Receipt,
+  UserCheck
 } from 'lucide-react';
 import {
   initialProperties,
@@ -71,7 +73,7 @@ export default function App() {
   const [paymentForm, setPaymentForm] = useState({
     unitId: 'UNT-402',
     amount: '1250',
-    method: 'M-Pesa (REF: QKX9901)',
+    method: 'Bank ACH Direct',
     period: 'November 2026',
   });
 
@@ -100,6 +102,21 @@ export default function App() {
     body: '',
   });
 
+  // Global ESC key listener to close modals
+  useEffect(() => {
+    const handleKeyDown = (e) => {
+      if (e.key === 'Escape') {
+        setSelectedReceipt(null);
+        setIsOnboardTenantOpen(false);
+        setIsRecordPaymentOpen(false);
+        setIsSubmitTicketOpen(false);
+        setIsNewNoticeOpen(false);
+      }
+    };
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, []);
+
   useEffect(() => {
     localStorage.setItem('estateflow_units', JSON.stringify(units));
   }, [units]);
@@ -122,96 +139,113 @@ export default function App() {
   };
 
   // Calculations
-  const totalUnitsCount = units.length;
+  const totalUnits = units.length;
   const occupiedUnits = units.filter(u => u.status === 'Occupied').length;
-  const occupancyPercentage = totalUnitsCount ? Math.round((occupiedUnits / totalUnitsCount) * 100) : 0;
-  const totalMonthlyYield = units.reduce((acc, u) => acc + (u.status === 'Occupied' ? u.monthlyRent : 0), 0);
-  const totalArrears = units.reduce((acc, u) => acc + (u.tenant?.rentBalance || 0), 0);
-  const openTicketsCount = tickets.filter(t => t.status !== 'Resolved').length;
+  const occupancyRate = totalUnits > 0 ? ((occupiedUnits / totalUnits) * 100).toFixed(1) : '0.0';
+  const totalMonthlyRoll = units.reduce((acc, u) => acc + (u.status === 'Occupied' ? Number(u.monthlyRent) : 0), 0);
+  const totalArrears = units.reduce((acc, u) => acc + (u.tenant ? Number(u.tenant.rentBalance || 0) : 0), 0);
 
-  // Active Tenant Context (for Tenant Portal demo)
-  const currentTenantUnit = units.find(u => u.unitNumber === 'Apartment 4B') || units[0];
+  // Maintenance Ticket Transition with Audit Trail
+  const handleUpdateTicketStatus = (ticketId, newStatus) => {
+    const now = new Date();
+    const timestampStr = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')} ${String(now.getHours()).padStart(2, '0')}:${String(now.getMinutes()).padStart(2, '0')}`;
+    
+    setTickets(prev =>
+      prev.map(t => {
+        if (t.id === ticketId) {
+          const updatedHistory = [
+            ...(t.history || []),
+            { timestamp: timestampStr, note: `Status updated to ${newStatus}` }
+          ];
+          return { ...t, status: newStatus, history: updatedHistory };
+        }
+        return t;
+      })
+    );
+    showToast(`Ticket #${ticketId} updated to ${newStatus}.`);
+  };
 
-  // Actions
+  // Record Payment
   const handleRecordPayment = (e) => {
     e.preventDefault();
-    const targetUnit = units.find(u => u.id === paymentForm.unitId);
-    if (!targetUnit) return;
+    const unit = units.find(u => u.id === paymentForm.unitId);
+    if (!unit || !unit.tenant) return;
 
-    const receiptObj = {
-      id: `RCPT-${Math.floor(1000 + Math.random() * 9000)}`,
-      unitNumber: targetUnit.unitNumber,
-      tenantName: targetUnit.tenant?.name || 'Resident',
-      amount: Number(paymentForm.amount),
+    const receiptId = `RCPT-${Math.floor(1000 + Math.random() * 9000)}`;
+    const amt = Number(paymentForm.amount);
+
+    const newReceipt = {
+      id: receiptId,
+      unitNumber: unit.unitNumber,
+      tenantName: unit.tenant.name,
+      amount: amt,
       period: paymentForm.period,
       method: paymentForm.method,
       date: new Date().toISOString().split('T')[0],
-      status: 'Cleared',
+      status: 'Cleared'
     };
 
-    setLedger(prev => [receiptObj, ...prev]);
+    setLedger(prev => [newReceipt, ...prev]);
 
-    // Clear balance on target unit
+    // Update tenant balance
     setUnits(prev =>
-      prev.map(u =>
-        u.id === targetUnit.id && u.tenant
-          ? {
-              ...u,
-              tenant: {
-                ...u.tenant,
-                rentBalance: Math.max(0, (u.tenant.rentBalance || 0) - Number(paymentForm.amount)),
-                rentStatus: 'Paid',
-              },
+      prev.map(u => {
+        if (u.id === unit.id && u.tenant) {
+          const newBal = Math.max(0, (u.tenant.rentBalance || 0) - amt);
+          return {
+            ...u,
+            tenant: {
+              ...u.tenant,
+              rentBalance: newBal,
+              rentStatus: newBal === 0 ? 'Paid' : 'Partial'
             }
-          : u
-      )
+          };
+        }
+        return u;
+      })
     );
 
     setIsRecordPaymentOpen(false);
-    setSelectedReceipt(receiptObj);
-    showToast(`Payment of $${paymentForm.amount} cleared for ${targetUnit.unitNumber}!`);
+    setSelectedReceipt(newReceipt);
+    showToast(`Payment ${receiptId} recorded. Printable receipt generated!`);
   };
 
+  // Submit Ticket
   const handleSubmitTicket = (e) => {
     e.preventDefault();
     if (!ticketForm.title) return;
 
+    const ticketId = `TCK-${Math.floor(100 + Math.random() * 900)}`;
+    const now = new Date();
+    const timestampStr = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')} ${String(now.getHours()).padStart(2, '0')}:${String(now.getMinutes()).padStart(2, '0')}`;
+
     const newTicket = {
-      id: `TCK-${Math.floor(500 + Math.random() * 500)}`,
+      id: ticketId,
       unitNumber: ticketForm.unitNumber,
       tenantName: ticketForm.tenantName,
       category: ticketForm.category,
       title: ticketForm.title,
       priority: ticketForm.priority,
-      status: 'In Progress',
-      assignedTo: 'Estate Rapid Response Team',
-      date: new Date().toISOString().split('T')[0],
-      description: ticketForm.description || 'Reported through Tenant Helpdesk',
+      status: 'Scheduled',
+      assignedTo: 'In-House Maintenance',
+      date: now.toISOString().split('T')[0],
+      description: ticketForm.description,
+      history: [
+        { timestamp: timestampStr, note: `Ticket submitted by ${ticketForm.tenantName}` }
+      ]
     };
 
     setTickets(prev => [newTicket, ...prev]);
     setIsSubmitTicketOpen(false);
-    setTicketForm({
-      unitNumber: 'Apartment 4B',
-      tenantName: 'Marcus Vance',
-      category: 'Plumbing',
-      title: '',
-      priority: 'Normal',
-      description: '',
-    });
-    showToast(`Maintenance Ticket #${newTicket.id} logged. A technician is assigned.`);
+    showToast(`Maintenance ticket ${ticketId} logged successfully.`);
   };
 
-  const handleUpdateTicketStatus = (ticketId, newStatus) => {
-    setTickets(prev =>
-      prev.map(t => (t.id === ticketId ? { ...t, status: newStatus } : t))
-    );
-    showToast(`Ticket ${ticketId} updated to ${newStatus}`);
-  };
-
+  // Onboard Tenant
   const handleOnboardTenant = (e) => {
     e.preventDefault();
-    if (!onboardForm.name || !onboardForm.phone) return;
+    if (!onboardForm.name) return;
+
+    const tenantId = `TNT-${Math.floor(8000 + Math.random() * 1000)}`;
 
     setUnits(prev =>
       prev.map(u => {
@@ -219,17 +253,18 @@ export default function App() {
           return {
             ...u,
             status: 'Occupied',
+            monthlyRent: Number(onboardForm.rent),
             tenant: {
-              id: `TNT-${Math.floor(8000 + Math.random() * 1000)}`,
+              id: tenantId,
               name: onboardForm.name,
               phone: onboardForm.phone,
-              email: onboardForm.email || 'tenant@estate.com',
+              email: onboardForm.email,
               leaseStart: new Date().toISOString().split('T')[0],
               leaseEnd: onboardForm.leaseEnd,
               depositPaid: Number(onboardForm.deposit),
               rentBalance: 0,
-              rentStatus: 'Paid',
-            },
+              rentStatus: 'Paid'
+            }
           };
         }
         return u;
@@ -240,319 +275,315 @@ export default function App() {
     showToast(`Tenant ${onboardForm.name} onboarded to unit.`);
   };
 
-  const handlePublishNotice = (e) => {
+  // Add Notice
+  const handleCreateNotice = (e) => {
     e.preventDefault();
-    if (!noticeForm.title || !noticeForm.body) return;
+    if (!noticeForm.title) return;
 
+    const noticeId = `NOT-${Math.floor(100 + Math.random() * 900)}`;
     const newNotice = {
-      id: `NOT-${Date.now().toString().slice(-3)}`,
+      id: noticeId,
       title: noticeForm.title,
-      target: noticeForm.target,
       date: new Date().toISOString().split('T')[0],
-      body: noticeForm.body,
+      target: noticeForm.target,
+      body: noticeForm.body
     };
 
     setNotices(prev => [newNotice, ...prev]);
     setIsNewNoticeOpen(false);
-    setNoticeForm({ title: '', target: 'All Residents', body: '' });
-    showToast(`Notice broadcasted to ${newNotice.target}!`);
+    showToast(`Broadcast notice dispatched (Simulated).`);
   };
 
   return (
-    <div className="min-h-screen bg-slate-950 text-slate-100 flex flex-col font-sans">
+    <div className="min-h-screen bg-[#F8FAFC] text-slate-900 flex flex-col font-sans selection:bg-blue-100 selection:text-blue-900">
       {/* Toast Alert */}
       {toastMessage && (
-        <div className="fixed top-5 right-5 z-50 flex items-center gap-3 bg-amber-400 text-slate-950 font-bold px-4 py-3 rounded-2xl shadow-2xl backdrop-blur-md border border-amber-300 animate-bounce no-print">
-          <CheckCircle2 className="w-5 h-5" />
-          <span>{toastMessage}</span>
+        <div
+          role="status"
+          aria-live="polite"
+          className="fixed top-5 right-5 z-50 flex items-center gap-3 bg-slate-900 text-white font-semibold px-4 py-3 rounded-xl shadow-xl border border-slate-700 no-print"
+        >
+          <CheckCircle2 className="w-5 h-5 text-emerald-400 shrink-0" />
+          <span className="text-sm">{toastMessage}</span>
         </div>
       )}
 
-      {/* Top Navbar */}
-      <nav className="sticky top-0 z-40 bg-slate-950/80 backdrop-blur-xl border-b border-slate-800/80 px-6 py-3.5 flex items-center justify-between no-print">
+      {/* Top Application Navbar */}
+      <header className="sticky top-0 z-40 bg-white border-b border-slate-200 px-4 sm:px-8 py-3.5 flex items-center justify-between no-print shadow-xs">
         <div className="flex items-center gap-3">
-          <div className="w-10 h-10 rounded-2xl bg-gradient-to-tr from-amber-500 to-amber-300 flex items-center justify-center text-slate-950 shadow-lg shadow-amber-500/25">
-            <Building className="w-5 h-5 stroke-[2.5]" />
+          <div className="w-9 h-9 rounded-xl bg-[#0F172A] text-white flex items-center justify-center shadow-xs">
+            <Building className="w-5 h-5 text-blue-400 stroke-[2.2]" />
           </div>
           <div>
             <div className="flex items-center gap-2">
-              <span className="text-xl font-extrabold tracking-tight bg-gradient-to-r from-white via-amber-200 to-amber-400 bg-clip-text text-transparent">
+              <span className="text-lg font-bold tracking-tight text-slate-900 font-display">
                 EstateFlow
               </span>
-              <span className="text-[10px] font-bold uppercase tracking-wider text-amber-400 border border-amber-500/30 px-2 py-0.5 rounded-full bg-amber-500/10">
-                Property & Tenant Portal
+              <span className="text-[10px] font-semibold uppercase tracking-wider text-blue-700 bg-blue-50 border border-blue-200 px-2 py-0.5 rounded-full">
+                Nordic Edition
               </span>
             </div>
-            <p className="text-[11px] text-slate-400">Leases • Rent Ledger • Maintenance • Noticeboard</p>
+            <p className="text-xs text-slate-500">Residential Property & Rent Ledger Management</p>
           </div>
         </div>
 
-        {/* View Mode Switcher */}
-        <div className="flex items-center bg-slate-900 border border-slate-800 p-1 rounded-xl">
-          <button
-            onClick={() => setRoleMode('manager')}
-            className={`px-4 py-1.5 text-xs font-semibold rounded-lg transition-all ${
-              roleMode === 'manager'
-                ? 'bg-amber-400 text-slate-950 font-bold shadow-md'
-                : 'text-slate-400 hover:text-slate-200'
-            }`}
-          >
-            Property Manager / Landlord
-          </button>
-          <button
-            onClick={() => setRoleMode('tenant')}
-            className={`px-4 py-1.5 text-xs font-semibold rounded-lg transition-all ${
-              roleMode === 'tenant'
-                ? 'bg-amber-400 text-slate-950 font-bold shadow-md'
-                : 'text-slate-400 hover:text-slate-200'
-            }`}
-          >
-            Tenant Resident View
-          </button>
-        </div>
-
-        {/* Quick Top Actions */}
-        <div className="flex items-center gap-2.5">
-          {roleMode === 'manager' ? (
-            <>
-              <button
-                onClick={() => setIsRecordPaymentOpen(true)}
-                className="hidden sm:flex items-center gap-1.5 px-3.5 py-1.5 text-xs font-semibold rounded-xl bg-emerald-600/20 text-emerald-300 border border-emerald-500/30 hover:bg-emerald-600/30"
-              >
-                <DollarSign className="w-3.5 h-3.5" />
-                <span>Receive Rent</span>
-              </button>
-              <button
-                onClick={() => setIsOnboardTenantOpen(true)}
-                className="flex items-center gap-1.5 px-3.5 py-1.5 text-xs font-bold rounded-xl bg-gradient-to-r from-amber-400 to-amber-500 hover:from-amber-300 hover:to-amber-400 text-slate-950 shadow-lg shadow-amber-500/20 transition-all"
-              >
-                <Plus className="w-4 h-4 stroke-[3]" />
-                <span>Onboard Tenant</span>
-              </button>
-            </>
-          ) : (
+        {/* Role Switcher & Action Controls */}
+        <div className="flex items-center gap-3">
+          <div className="flex items-center bg-slate-100 p-1 rounded-xl border border-slate-200">
             <button
-              onClick={() => setIsSubmitTicketOpen(true)}
-              className="flex items-center gap-1.5 px-4 py-2 text-xs font-bold rounded-xl bg-gradient-to-r from-amber-400 to-amber-500 hover:from-amber-300 hover:to-amber-400 text-slate-950 shadow-lg shadow-amber-500/20 transition-all"
+              type="button"
+              onClick={() => setRoleMode('manager')}
+              className={`px-3 py-1.5 text-xs font-semibold rounded-lg transition-all ${
+                roleMode === 'manager'
+                  ? 'bg-white text-slate-900 font-bold shadow-xs'
+                  : 'text-slate-600 hover:text-slate-900'
+              }`}
             >
-              <Wrench className="w-3.5 h-3.5 stroke-[2.5]" />
-              <span>Report Repair Issue</span>
+              Property Manager
+            </button>
+            <button
+              type="button"
+              onClick={() => setRoleMode('tenant')}
+              className={`px-3 py-1.5 text-xs font-semibold rounded-lg transition-all ${
+                roleMode === 'tenant'
+                  ? 'bg-white text-slate-900 font-bold shadow-xs'
+                  : 'text-slate-600 hover:text-slate-900'
+              }`}
+            >
+              Tenant Portal
+            </button>
+          </div>
+
+          {roleMode === 'manager' && (
+            <button
+              type="button"
+              onClick={() => setIsRecordPaymentOpen(true)}
+              aria-label="Record rent payment"
+              className="flex items-center gap-1.5 px-3.5 py-2 text-xs font-bold rounded-lg bg-blue-600 hover:bg-blue-700 text-white shadow-xs transition-colors"
+            >
+              <CreditCard className="w-4 h-4" />
+              <span className="hidden sm:inline">Record Payment</span>
+            </button>
+          )}
+
+          {roleMode === 'tenant' && (
+            <button
+              type="button"
+              onClick={() => setIsSubmitTicketOpen(true)}
+              aria-label="Submit maintenance ticket"
+              className="flex items-center gap-1.5 px-3.5 py-2 text-xs font-bold rounded-lg bg-blue-600 hover:bg-blue-700 text-white shadow-xs transition-colors"
+            >
+              <Wrench className="w-4 h-4" />
+              <span>Report Issue</span>
             </button>
           )}
         </div>
-      </nav>
+      </header>
 
-      {/* ======================= VIEW: PROPERTY MANAGER COMMAND CENTER ======================= */}
-      {roleMode === 'manager' ? (
-        <main className="flex-1 max-w-7xl mx-auto px-6 py-8 w-full space-y-8">
-          <div>
-            <h1 className="text-2xl sm:text-3xl font-extrabold text-white tracking-tight">
-              Real Estate Asset & Tenancy Overview
-            </h1>
-            <p className="text-xs sm:text-sm text-slate-400 mt-1">
-              Multi-property occupancy tracking, financial yields, maintenance dispatch, and legal lease compliance.
-            </p>
+      {/* Main Workspace */}
+      <main className="flex-1 max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-6 w-full space-y-6">
+        
+        {/* KPI Metric Summary Cards */}
+        <section aria-label="Portfolio Key Metrics" className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4 no-print">
+          <div className="p-5 rounded-2xl bg-white border border-slate-200 shadow-xs space-y-1">
+            <span className="text-[11px] font-semibold text-slate-500 uppercase tracking-wider">Occupancy Rate</span>
+            <div className="text-2xl font-black text-slate-900">{occupancyRate}%</div>
+            <p className="text-xs text-emerald-700 font-medium">{occupiedUnits} of {totalUnits} units occupied</p>
           </div>
 
-          {/* Telemetry Cards */}
-          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
-            <div className="p-5 rounded-2xl bg-slate-900/80 border border-slate-800 shadow-xl">
-              <div className="text-xs text-slate-400 uppercase font-medium">Occupancy Rate</div>
-              <div className="text-3xl font-extrabold text-white mt-1">{occupancyPercentage}%</div>
-              <div className="text-xs text-emerald-400 mt-1">
-                {occupiedUnits} of {totalUnitsCount} Units Leased
-              </div>
-            </div>
-
-            <div className="p-5 rounded-2xl bg-slate-900/80 border border-slate-800 shadow-xl">
-              <div className="text-xs text-slate-400 uppercase font-medium">Monthly Gross Yield</div>
-              <div className="text-3xl font-extrabold text-emerald-400 mt-1">
-                ${totalMonthlyYield.toLocaleString()}
-              </div>
-              <div className="text-xs text-slate-400 mt-1">Current contracted rentals</div>
-            </div>
-
-            <div className="p-5 rounded-2xl bg-slate-900/80 border border-slate-800 shadow-xl">
-              <div className="text-xs text-slate-400 uppercase font-medium">Rent In Arrears</div>
-              <div className="text-3xl font-extrabold text-rose-400 mt-1">
-                ${totalArrears.toLocaleString()}
-              </div>
-              <div className="text-xs text-rose-400 mt-1">Pending tenant settlements</div>
-            </div>
-
-            <div className="p-5 rounded-2xl bg-slate-900/80 border border-slate-800 shadow-xl">
-              <div className="text-xs text-slate-400 uppercase font-medium">Open Maintenance</div>
-              <div className="text-3xl font-extrabold text-amber-400 mt-1">
-                {openTicketsCount} Tickets
-              </div>
-              <div className="text-xs text-slate-400 mt-1">Active repair contractors</div>
-            </div>
+          <div className="p-5 rounded-2xl bg-white border border-slate-200 shadow-xs space-y-1">
+            <span className="text-[11px] font-semibold text-slate-500 uppercase tracking-wider">Monthly Rent Roll</span>
+            <div className="text-2xl font-black text-slate-900">${totalMonthlyRoll.toLocaleString()}</div>
+            <p className="text-xs text-slate-500">Contracted monthly baseline</p>
           </div>
 
-          {/* Manager Module Tabs */}
-          <div className="flex items-center gap-2 border-b border-slate-800 pb-3">
-            {[
-              { id: 'units', label: 'Units & Leases', count: units.length },
-              { id: 'ledger', label: 'Rent Collection Ledger', count: ledger.length },
-              { id: 'tickets', label: 'Maintenance Dispatch', count: tickets.length },
-              { id: 'notices', label: 'Resident Noticeboard', count: notices.length },
-            ].map(tab => (
+          <div className="p-5 rounded-2xl bg-white border border-slate-200 shadow-xs space-y-1">
+            <span className="text-[11px] font-semibold text-slate-500 uppercase tracking-wider">Active Maintenance</span>
+            <div className="text-2xl font-black text-slate-900">
+              {tickets.filter(t => t.status !== 'Resolved').length}
+            </div>
+            <p className="text-xs text-amber-700 font-medium">Open work orders</p>
+          </div>
+
+          <div className="p-5 rounded-2xl bg-white border border-slate-200 shadow-xs space-y-1">
+            <span className="text-[11px] font-semibold text-slate-500 uppercase tracking-wider">Outstanding Arrears</span>
+            <div className="text-2xl font-black text-slate-900">${totalArrears.toLocaleString()}</div>
+            <p className="text-xs text-rose-700 font-medium">Pending collection balance</p>
+          </div>
+        </section>
+
+        {/* Tab Navigation Controls */}
+        <nav aria-label="Module Tabs" className="flex items-center gap-2 border-b border-slate-200 pb-3 no-print overflow-x-auto">
+          {[
+            { id: 'units', label: 'Unit Inventory & Leases', count: units.length, icon: Home },
+            { id: 'ledger', label: 'Rent Ledger & Receipts', count: ledger.length, icon: Receipt },
+            { id: 'tickets', label: 'Maintenance Requests', count: tickets.length, icon: Wrench },
+            { id: 'notices', label: 'Broadcast Notices', count: notices.length, icon: Bell }
+          ].map(tab => {
+            const Icon = tab.icon;
+            return (
               <button
                 key={tab.id}
+                type="button"
                 onClick={() => setActiveTab(tab.id)}
-                className={`px-4 py-2 text-xs font-semibold rounded-xl transition-all ${
+                className={`flex items-center gap-2 px-3.5 py-2 rounded-xl text-xs font-semibold whitespace-nowrap transition-all ${
                   activeTab === tab.id
-                    ? 'bg-amber-400 text-slate-950 font-bold shadow-md'
-                    : 'text-slate-400 hover:text-white bg-slate-900 border border-slate-800'
+                    ? 'bg-slate-900 text-white shadow-xs'
+                    : 'bg-white text-slate-600 hover:bg-slate-100 border border-slate-200'
                 }`}
               >
-                {tab.label} ({tab.count})
+                <Icon className="w-4 h-4" />
+                <span>{tab.label}</span>
+                <span className={`px-1.5 py-0.5 rounded-full text-[10px] ${
+                  activeTab === tab.id ? 'bg-slate-800 text-slate-200' : 'bg-slate-100 text-slate-600'
+                }`}>
+                  {tab.count}
+                </span>
               </button>
-            ))}
-          </div>
+            );
+          })}
+        </nav>
 
-          {/* TAB 1: UNITS & LEASES */}
-          {activeTab === 'units' && (
-            <div className="space-y-4">
-              <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
-                {units.map(unit => (
-                  <div
-                    key={unit.id}
-                    className="p-5 rounded-2xl bg-slate-900/70 border border-slate-800 hover:border-slate-700 transition-all shadow-xl flex flex-col justify-between"
-                  >
-                    <div>
-                      <div className="flex items-center justify-between mb-3">
-                        <span className="font-bold text-sm text-white">{unit.unitNumber}</span>
-                        <span
-                          className={`text-[10px] px-2 py-0.5 rounded-full font-bold ${
-                            unit.status === 'Occupied'
-                              ? 'bg-emerald-500/10 text-emerald-400 border border-emerald-500/20'
-                              : 'bg-amber-500/10 text-amber-400 border border-amber-500/20'
-                          }`}
-                        >
-                          {unit.status}
-                        </span>
-                      </div>
-
-                      <p className="text-xs text-slate-400">{unit.estateName}</p>
-                      <p className="text-[11px] text-slate-500 mt-0.5">{unit.type}</p>
-
-                      <div className="mt-4 pt-3 border-t border-slate-800 space-y-1.5 text-xs text-slate-400">
-                        <div className="flex items-center justify-between">
-                          <span>Monthly Rent:</span>
-                          <span className="font-mono font-bold text-white">${unit.monthlyRent}</span>
-                        </div>
-                        {unit.tenant ? (
-                          <>
-                            <div className="flex items-center justify-between">
-                              <span>Tenant:</span>
-                              <span className="font-semibold text-slate-200">{unit.tenant.name}</span>
-                            </div>
-                            <div className="flex items-center justify-between">
-                              <span>Lease Valid:</span>
-                              <span className="text-slate-300">{unit.tenant.leaseEnd}</span>
-                            </div>
-                            <div className="flex items-center justify-between">
-                              <span>Rent Standing:</span>
-                              <span
-                                className={`font-bold ${
-                                  unit.tenant.rentBalance === 0 ? 'text-emerald-400' : 'text-rose-400'
-                                }`}
-                              >
-                                {unit.tenant.rentBalance === 0 ? 'Paid' : `Bal: $${unit.tenant.rentBalance}`}
-                              </span>
-                            </div>
-                          </>
-                        ) : (
-                          <div className="py-2 text-center text-slate-500 italic text-[11px]">
-                            Unit Vacant • Ready for tenant onboarding
-                          </div>
-                        )}
-                      </div>
-                    </div>
-
-                    <div className="mt-4 pt-3 border-t border-slate-800">
-                      {unit.tenant ? (
-                        <button
-                          onClick={() => {
-                            setPaymentForm({
-                              unitId: unit.id,
-                              amount: unit.monthlyRent.toString(),
-                              method: 'M-Pesa (REF: QKX' + Math.floor(1000 + Math.random() * 9000) + ')',
-                              period: 'November 2026',
-                            });
-                            setIsRecordPaymentOpen(true);
-                          }}
-                          className="w-full py-1.5 rounded-lg bg-emerald-600/20 hover:bg-emerald-600/30 text-emerald-300 border border-emerald-500/30 text-xs font-semibold"
-                        >
-                          Record Rent Payment
-                        </button>
-                      ) : (
-                        <button
-                          onClick={() => {
-                            setOnboardForm({ ...onboardForm, unitId: unit.id, rent: unit.monthlyRent.toString() });
-                            setIsOnboardTenantOpen(true);
-                          }}
-                          className="w-full py-1.5 rounded-lg bg-amber-400 hover:bg-amber-300 text-slate-950 text-xs font-bold"
-                        >
-                          Assign Tenant
-                        </button>
-                      )}
-                    </div>
-                  </div>
-                ))}
-              </div>
-            </div>
-          )}
-
-          {/* TAB 2: RENT LEDGER */}
-          {activeTab === 'ledger' && (
-            <div className="rounded-2xl border border-slate-800 bg-slate-900/60 overflow-hidden shadow-xl">
-              <div className="p-4 border-b border-slate-800 flex items-center justify-between">
-                <h3 className="font-bold text-sm text-white">Rent Receipts & Collection Records</h3>
+        {/* ======================= TAB 1: UNITS & TENANTS ======================= */}
+        {activeTab === 'units' && (
+          <section className="space-y-4 no-print">
+            <div className="flex items-center justify-between">
+              <h2 className="text-base font-bold text-slate-900">Residential Units Directory</h2>
+              {roleMode === 'manager' && (
                 <button
-                  onClick={() => setIsRecordPaymentOpen(true)}
-                  className="text-xs text-amber-400 hover:text-amber-300 font-bold"
+                  type="button"
+                  onClick={() => setIsOnboardTenantOpen(true)}
+                  aria-label="Onboard new tenant"
+                  className="px-3 py-1.5 rounded-lg bg-blue-600 hover:bg-blue-700 text-white font-semibold text-xs flex items-center gap-1.5 shadow-xs"
                 >
-                  + Record Payment
+                  <UserCheck className="w-3.5 h-3.5" />
+                  <span>Onboard Tenant</span>
                 </button>
-              </div>
+              )}
+            </div>
 
+            {/* Desktop Table View (>= 768px) */}
+            <div className="hidden md:block rounded-2xl border border-slate-200 bg-white overflow-hidden shadow-xs">
               <table className="w-full text-left border-collapse text-xs">
                 <thead>
-                  <tr className="border-b border-slate-800 bg-slate-900 text-slate-400 font-semibold uppercase text-[10px]">
-                    <th className="p-4">Receipt Ref</th>
-                    <th className="p-4">Unit</th>
-                    <th className="p-4">Tenant</th>
-                    <th className="p-4">Period</th>
-                    <th className="p-4">Method</th>
-                    <th className="p-4">Date</th>
-                    <th className="p-4">Amount</th>
-                    <th className="p-4 text-right">Official Receipt</th>
+                  <tr className="bg-slate-50 border-b border-slate-200 text-slate-600 font-semibold uppercase text-[10px]">
+                    <th className="py-3 px-4">Unit #</th>
+                    <th className="py-3 px-4">Property / Location</th>
+                    <th className="py-3 px-4">Layout / Type</th>
+                    <th className="py-3 px-4 text-right">Rent</th>
+                    <th className="py-3 px-4">Current Tenant</th>
+                    <th className="py-3 px-4 text-center">Status</th>
                   </tr>
                 </thead>
-                <tbody className="divide-y divide-slate-800 text-slate-300">
-                  {ledger.map(rcpt => (
-                    <tr key={rcpt.id} className="hover:bg-slate-800/40 transition-colors">
-                      <td className="p-4 font-mono font-bold text-amber-400">{rcpt.id}</td>
-                      <td className="p-4 font-semibold text-white">{rcpt.unitNumber}</td>
-                      <td className="p-4 text-slate-300">{rcpt.tenantName}</td>
-                      <td className="p-4 text-slate-400">{rcpt.period}</td>
-                      <td className="p-4">
-                        <span className="px-2 py-0.5 rounded bg-slate-800 text-slate-300 font-medium">
-                          {rcpt.method}
+                <tbody className="divide-y divide-slate-100 text-slate-800">
+                  {units.map(u => (
+                    <tr key={u.id} className="hover:bg-slate-50/50">
+                      <td className="py-3.5 px-4 font-bold text-slate-900">{u.unitNumber}</td>
+                      <td className="py-3.5 px-4 text-slate-600">{u.estateName}</td>
+                      <td className="py-3.5 px-4 text-slate-600">{u.type}</td>
+                      <td className="py-3.5 px-4 text-right font-mono font-bold text-slate-900">
+                        ${u.monthlyRent.toLocaleString()}
+                      </td>
+                      <td className="py-3.5 px-4">
+                        {u.tenant ? (
+                          <div>
+                            <div className="font-semibold text-slate-900">{u.tenant.name}</div>
+                            <div className="text-[11px] text-slate-500">{u.tenant.phone}</div>
+                          </div>
+                        ) : (
+                          <span className="text-slate-400 italic">No Active Lease</span>
+                        )}
+                      </td>
+                      <td className="py-3.5 px-4 text-center">
+                        <span className={`inline-block px-2.5 py-0.5 rounded-full text-[10px] font-bold ${
+                          u.status === 'Occupied'
+                            ? 'bg-emerald-50 text-emerald-800 border border-emerald-300'
+                            : 'bg-slate-100 text-slate-800 border border-slate-300'
+                        }`}>
+                          {u.status}
                         </span>
                       </td>
-                      <td className="p-4 text-slate-400">{rcpt.date}</td>
-                      <td className="p-4 font-extrabold font-mono text-emerald-400 text-sm">
-                        ${rcpt.amount}
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+
+            {/* Mobile Card Layout (< 768px) to prevent column wrapping */}
+            <div className="md:hidden space-y-3">
+              {units.map(u => (
+                <div key={u.id} className="p-4 rounded-xl bg-white border border-slate-200 shadow-xs space-y-2 text-xs">
+                  <div className="flex items-center justify-between">
+                    <span className="font-bold text-base text-slate-900">{u.unitNumber}</span>
+                    <span className={`px-2.5 py-0.5 rounded-full text-[10px] font-bold ${
+                      u.status === 'Occupied'
+                        ? 'bg-emerald-50 text-emerald-800 border border-emerald-300'
+                        : 'bg-slate-100 text-slate-800 border border-slate-300'
+                    }`}>
+                      {u.status}
+                    </span>
+                  </div>
+                  <div className="text-slate-600">{u.estateName} • {u.type}</div>
+                  <div className="flex items-center justify-between pt-2 border-t border-slate-100">
+                    <div>
+                      <div className="text-[10px] uppercase font-bold text-slate-400">Monthly Rent</div>
+                      <div className="font-mono font-bold text-slate-900">${u.monthlyRent.toLocaleString()}</div>
+                    </div>
+                    {u.tenant && (
+                      <div className="text-right">
+                        <div className="text-[10px] uppercase font-bold text-slate-400">Tenant</div>
+                        <div className="font-semibold text-slate-900">{u.tenant.name}</div>
+                      </div>
+                    )}
+                  </div>
+                </div>
+              ))}
+            </div>
+          </section>
+        )}
+
+        {/* ======================= TAB 2: RENT LEDGER & RECEIPTS ======================= */}
+        {activeTab === 'ledger' && (
+          <section className="space-y-4 no-print">
+            <div className="flex items-center justify-between">
+              <h2 className="text-base font-bold text-slate-900">Cleared Rent Remittance Ledger</h2>
+              <span className="text-xs font-semibold text-slate-500">Instant PDF & Print Verification</span>
+            </div>
+
+            {/* Desktop Table View (>= 768px) */}
+            <div className="hidden md:block rounded-2xl border border-slate-200 bg-white overflow-hidden shadow-xs">
+              <table className="w-full text-left border-collapse text-xs">
+                <thead>
+                  <tr className="bg-slate-50 border-b border-slate-200 text-slate-600 font-semibold uppercase text-[10px]">
+                    <th className="py-3 px-4">Receipt #</th>
+                    <th className="py-3 px-4">Unit</th>
+                    <th className="py-3 px-4">Tenant</th>
+                    <th className="py-3 px-4">Remittance Method</th>
+                    <th className="py-3 px-4">Billing Period</th>
+                    <th className="py-3 px-4 text-right">Amount</th>
+                    <th className="py-3 px-4 text-center">Receipt</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-slate-100 text-slate-800">
+                  {ledger.map(rcpt => (
+                    <tr key={rcpt.id} className="hover:bg-slate-50/50">
+                      <td className="py-3.5 px-4 font-mono font-bold text-blue-700">{rcpt.id}</td>
+                      <td className="py-3.5 px-4 font-semibold text-slate-900">{rcpt.unitNumber}</td>
+                      <td className="py-3.5 px-4 text-slate-700">{rcpt.tenantName}</td>
+                      <td className="py-3.5 px-4 text-slate-600">{rcpt.method}</td>
+                      <td className="py-3.5 px-4 text-slate-600">{rcpt.period}</td>
+                      <td className="py-3.5 px-4 text-right font-mono font-bold text-slate-900">
+                        ${rcpt.amount.toLocaleString()}
                       </td>
-                      <td className="p-4 text-right">
+                      <td className="py-3.5 px-4 text-center">
                         <button
+                          type="button"
                           onClick={() => setSelectedReceipt(rcpt)}
-                          className="px-2.5 py-1 rounded-lg bg-amber-400/20 text-amber-300 border border-amber-400/30 hover:bg-amber-400/30 font-semibold text-[11px]"
+                          aria-label={`View and print receipt ${rcpt.id}`}
+                          className="px-2.5 py-1 rounded-md bg-slate-100 hover:bg-slate-200 text-slate-700 font-semibold text-[11px] inline-flex items-center gap-1 transition-colors"
                         >
-                          Print Receipt
+                          <Printer className="w-3.5 h-3.5" />
+                          <span>View Receipt</span>
                         </button>
                       </td>
                     </tr>
@@ -560,351 +591,330 @@ export default function App() {
                 </tbody>
               </table>
             </div>
-          )}
 
-          {/* TAB 3: MAINTENANCE DISPATCH */}
-          {activeTab === 'tickets' && (
-            <div className="rounded-2xl border border-slate-800 bg-slate-900/60 overflow-hidden shadow-xl">
-              <div className="p-4 border-b border-slate-800 flex items-center justify-between">
-                <h3 className="font-bold text-sm text-white">Maintenance Work Orders & Tickets</h3>
-                <span className="text-xs text-slate-400">{tickets.length} Active Tickets</span>
-              </div>
-
-              <div className="divide-y divide-slate-800">
-                {tickets.map(t => (
-                  <div key={t.id} className="p-5 flex flex-col sm:flex-row sm:items-center justify-between gap-4 hover:bg-slate-800/30 transition-colors">
-                    <div className="space-y-1">
-                      <div className="flex items-center gap-2.5">
-                        <span className="font-mono font-bold text-amber-400 text-xs">{t.id}</span>
-                        <span className="font-bold text-white text-sm">{t.title}</span>
-                        <span className={`px-2 py-0.5 rounded text-[10px] font-bold ${
-                          t.priority === 'Urgent'
-                            ? 'bg-rose-500/20 text-rose-400 border border-rose-500/30'
-                            : 'bg-slate-800 text-slate-400'
-                        }`}>
-                          {t.priority}
-                        </span>
-                      </div>
-                      <p className="text-xs text-slate-400 leading-relaxed">{t.description}</p>
-                      <div className="flex items-center gap-4 text-[11px] text-slate-500 pt-1">
-                        <span>Unit: <strong className="text-slate-300">{t.unitNumber}</strong></span>
-                        <span>Tenant: <strong className="text-slate-300">{t.tenantName}</strong></span>
-                        <span>Contractor: <strong className="text-slate-300">{t.assignedTo}</strong></span>
-                      </div>
-                    </div>
-
-                    <div className="flex items-center gap-3">
-                      <select
-                        value={t.status}
-                        onChange={e => handleUpdateTicketStatus(t.id, e.target.value)}
-                        className="px-3 py-1.5 rounded-xl bg-slate-950 border border-slate-800 text-xs text-slate-200 focus:outline-none"
-                      >
-                        <option value="Open">Open</option>
-                        <option value="In Progress">In Progress</option>
-                        <option value="Scheduled">Scheduled</option>
-                        <option value="Resolved">Resolved</option>
-                      </select>
-                    </div>
-                  </div>
-                ))}
-              </div>
-            </div>
-          )}
-
-          {/* TAB 4: NOTICEBOARD */}
-          {activeTab === 'notices' && (
-            <div className="space-y-4">
-              <div className="flex items-center justify-between">
-                <h3 className="font-bold text-base text-white">Estate Announcements & Resident Circulars</h3>
-                <button
-                  onClick={() => setIsNewNoticeOpen(true)}
-                  className="px-4 py-2 rounded-xl bg-amber-400 text-slate-950 font-bold text-xs"
-                >
-                  + Post New Notice
-                </button>
-              </div>
-
-              <div className="space-y-3">
-                {notices.map(n => (
-                  <div key={n.id} className="p-5 rounded-2xl bg-slate-900/60 border border-slate-800 space-y-2">
-                    <div className="flex items-center justify-between">
-                      <h4 className="font-bold text-sm text-white">{n.title}</h4>
-                      <span className="text-[11px] text-slate-500">{n.date}</span>
-                    </div>
-                    <span className="px-2 py-0.5 rounded text-[10px] font-semibold bg-amber-500/10 text-amber-400 border border-amber-500/20">
-                      {n.target}
-                    </span>
-                    <p className="text-xs text-slate-300 leading-relaxed pt-1">{n.body}</p>
-                  </div>
-                ))}
-              </div>
-            </div>
-          )}
-        </main>
-      ) : (
-        /* ======================= VIEW: TENANT RESIDENT PORTAL ======================= */
-        <main className="flex-1 max-w-5xl mx-auto px-6 py-8 w-full space-y-8">
-          {/* Tenant Lease Summary Card */}
-          <div className="p-8 rounded-3xl bg-gradient-to-br from-slate-900 via-indigo-950/30 to-slate-900 border border-slate-800 relative overflow-hidden shadow-2xl">
-            <div className="flex flex-col md:flex-row md:items-center justify-between gap-6">
-              <div className="space-y-2">
-                <span className="px-3 py-1 rounded-full bg-amber-400/10 border border-amber-400/30 text-amber-400 text-xs font-semibold">
-                  Official Tenant Resident Account
-                </span>
-                <h1 className="text-3xl font-extrabold text-white">
-                  Welcome Home, {currentTenantUnit.tenant?.name || 'Resident'}
-                </h1>
-                <p className="text-xs text-slate-400">
-                  {currentTenantUnit.estateName} • {currentTenantUnit.unitNumber} ({currentTenantUnit.type})
-                </p>
-                <div className="pt-2 text-xs text-slate-300 space-y-1">
-                  <div>Lease Active Until: <strong>{currentTenantUnit.tenant?.leaseEnd}</strong></div>
-                  <div>Security Deposit Held: <strong>${currentTenantUnit.tenant?.depositPaid}</strong></div>
-                </div>
-              </div>
-
-              <div className="p-6 rounded-2xl bg-slate-950/80 border border-slate-800 text-center space-y-3">
-                <span className="text-xs text-slate-400 uppercase font-medium">Current Month Rent</span>
-                <div className="text-3xl font-extrabold font-mono text-white">
-                  ${currentTenantUnit.monthlyRent}
-                </div>
-                <div className="text-xs text-emerald-400 font-semibold">
-                  Status: {currentTenantUnit.tenant?.rentStatus || 'Paid'}
-                </div>
-                <button
-                  onClick={() => {
-                    setPaymentForm({
-                      unitId: currentTenantUnit.id,
-                      amount: currentTenantUnit.monthlyRent.toString(),
-                      method: 'M-Pesa Mobile Checkout',
-                      period: 'Current Month',
-                    });
-                    setIsRecordPaymentOpen(true);
-                  }}
-                  className="w-full py-2 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white font-bold text-xs shadow-md shadow-emerald-600/20"
-                >
-                  Pay Rent via M-Pesa / Card
-                </button>
-              </div>
-            </div>
-          </div>
-
-          {/* Quick Tenant Actions Grid */}
-          <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-            <div
-              onClick={() => setIsSubmitTicketOpen(true)}
-              className="p-6 rounded-2xl bg-slate-900/60 border border-slate-800 hover:border-amber-400/50 cursor-pointer transition-all flex items-center justify-between group"
-            >
-              <div className="flex items-center gap-4">
-                <div className="p-3.5 rounded-2xl bg-amber-400/10 text-amber-400 border border-amber-400/20">
-                  <Wrench className="w-6 h-6" />
-                </div>
-                <div>
-                  <h3 className="font-bold text-base text-white group-hover:text-amber-300 transition-colors">
-                    Report Maintenance Issue
-                  </h3>
-                  <p className="text-xs text-slate-400 mt-0.5">Plumbing, electrical, locks, air conditioning</p>
-                </div>
-              </div>
-              <ChevronRight className="w-5 h-5 text-slate-500 group-hover:translate-x-1 transition-transform" />
-            </div>
-
-            <div
-              onClick={() => {
-                const myRcpt = ledger.find(l => l.unitNumber === currentTenantUnit.unitNumber) || ledger[0];
-                setSelectedReceipt(myRcpt);
-              }}
-              className="p-6 rounded-2xl bg-slate-900/60 border border-slate-800 hover:border-amber-400/50 cursor-pointer transition-all flex items-center justify-between group"
-            >
-              <div className="flex items-center gap-4">
-                <div className="p-3.5 rounded-2xl bg-indigo-500/10 text-indigo-400 border border-indigo-500/20">
-                  <ReceiptIcon className="w-6 h-6" />
-                </div>
-                <div>
-                  <h3 className="font-bold text-base text-white group-hover:text-indigo-300 transition-colors">
-                    View & Print Rent Receipt
-                  </h3>
-                  <p className="text-xs text-slate-400 mt-0.5">Download official proof of payment</p>
-                </div>
-              </div>
-              <ChevronRight className="w-5 h-5 text-slate-500 group-hover:translate-x-1 transition-transform" />
-            </div>
-          </div>
-
-          {/* Tenant Notices View */}
-          <div className="rounded-2xl border border-slate-800 bg-slate-900/60 p-6 space-y-4">
-            <h3 className="font-bold text-sm text-white">Estate Noticeboard</h3>
-            <div className="space-y-3">
-              {notices.map(n => (
-                <div key={n.id} className="p-4 rounded-xl bg-slate-950 border border-slate-800 space-y-1.5">
+            {/* Mobile Card Layout (< 768px) */}
+            <div className="md:hidden space-y-3">
+              {ledger.map(rcpt => (
+                <div key={rcpt.id} className="p-4 rounded-xl bg-white border border-slate-200 shadow-xs space-y-2 text-xs">
                   <div className="flex items-center justify-between">
-                    <h4 className="font-bold text-xs text-white">{n.title}</h4>
-                    <span className="text-[10px] text-slate-500">{n.date}</span>
+                    <span className="font-mono font-bold text-blue-700">{rcpt.id}</span>
+                    <span className="font-mono font-bold text-slate-900 text-sm">${rcpt.amount.toLocaleString()}</span>
                   </div>
-                  <p className="text-xs text-slate-300 leading-relaxed">{n.body}</p>
+                  <div className="font-semibold text-slate-900">{rcpt.tenantName} • {rcpt.unitNumber}</div>
+                  <div className="text-[11px] text-slate-500">{rcpt.method} • {rcpt.period}</div>
+                  <button
+                    type="button"
+                    onClick={() => setSelectedReceipt(rcpt)}
+                    aria-label={`Open receipt ${rcpt.id}`}
+                    className="w-full mt-2 py-2 rounded-lg bg-slate-100 hover:bg-slate-200 text-slate-800 font-semibold text-xs flex items-center justify-center gap-1.5"
+                  >
+                    <Printer className="w-3.5 h-3.5" />
+                    <span>Print Official Receipt</span>
+                  </button>
                 </div>
               ))}
             </div>
-          </div>
-        </main>
-      )}
+          </section>
+        )}
 
-      {/* ======================= MODAL: OFFICIAL RENT RECEIPT (PRINTABLE) ======================= */}
-      {selectedReceipt && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/85 backdrop-blur-md overflow-y-auto">
-          <div className="bg-slate-900 border border-slate-800 rounded-3xl max-w-md w-full p-6 sm:p-8 shadow-2xl relative text-slate-200">
-            <button
-              onClick={() => setSelectedReceipt(null)}
-              className="absolute top-4 right-4 p-2 rounded-full bg-slate-800 text-slate-400 hover:text-white no-print"
-            >
-              <X className="w-5 h-5" />
-            </button>
-
-            {/* Receipt Letterhead */}
-            <div className="text-center pb-4 border-b border-slate-800 space-y-1">
-              <div className="w-10 h-10 rounded-2xl bg-amber-400/20 text-amber-400 flex items-center justify-center mx-auto mb-2">
-                <Building className="w-6 h-6 stroke-[2.5]" />
-              </div>
-              <h2 className="text-xl font-extrabold text-white">ESTATEFLOW PROPERTIES</h2>
-              <p className="text-[11px] text-slate-400">Official Rent Collection & Tenancy Receipt</p>
-              <div className="font-mono text-xs font-bold text-amber-400 mt-1">{selectedReceipt.id}</div>
-            </div>
-
-            {/* Receipt Details */}
-            <div className="py-4 space-y-2.5 text-xs">
-              <div className="flex items-center justify-between">
-                <span className="text-slate-400">Unit / Residence:</span>
-                <span className="font-bold text-white">{selectedReceipt.unitNumber}</span>
-              </div>
-              <div className="flex items-center justify-between">
-                <span className="text-slate-400">Tenant Name:</span>
-                <span className="font-semibold text-slate-200">{selectedReceipt.tenantName}</span>
-              </div>
-              <div className="flex items-center justify-between">
-                <span className="text-slate-400">Rental Period:</span>
-                <span className="text-slate-300">{selectedReceipt.period}</span>
-              </div>
-              <div className="flex items-center justify-between">
-                <span className="text-slate-400">Payment Channel:</span>
-                <span className="text-slate-300">{selectedReceipt.method}</span>
-              </div>
-              <div className="flex items-center justify-between">
-                <span className="text-slate-400">Transaction Date:</span>
-                <span className="text-slate-300">{selectedReceipt.date}</span>
-              </div>
-              <div className="pt-3 border-t border-slate-800 flex items-center justify-between text-base">
-                <span className="font-bold text-white">Amount Cleared:</span>
-                <span className="font-mono font-extrabold text-emerald-400">${selectedReceipt.amount}</span>
-              </div>
-            </div>
-
-            <div className="p-3 rounded-xl bg-slate-950 border border-slate-800 text-[10px] text-slate-400 text-center">
-              Verified by Property Management • Authorized Digital Seal
-            </div>
-
-            {/* Action Buttons */}
-            <div className="pt-4 flex items-center justify-end gap-3 no-print">
+        {/* ======================= TAB 3: MAINTENANCE TICKETS ======================= */}
+        {activeTab === 'tickets' && (
+          <section className="space-y-4 no-print">
+            <div className="flex items-center justify-between">
+              <h2 className="text-base font-bold text-slate-900">Maintenance & Facilities Work Orders</h2>
               <button
-                onClick={() => setSelectedReceipt(null)}
-                className="px-4 py-2 text-xs font-medium text-slate-400 hover:text-white"
+                type="button"
+                onClick={() => setIsSubmitTicketOpen(true)}
+                aria-label="Report new maintenance issue"
+                className="px-3 py-1.5 rounded-lg bg-blue-600 hover:bg-blue-700 text-white font-semibold text-xs flex items-center gap-1.5 shadow-xs"
               >
-                Close
+                <Plus className="w-3.5 h-3.5 stroke-[3]" />
+                <span>New Ticket</span>
+              </button>
+            </div>
+
+            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+              {tickets.map(t => (
+                <article
+                  key={t.id}
+                  className="p-5 rounded-2xl bg-white border border-slate-200 shadow-xs space-y-3 flex flex-col justify-between"
+                >
+                  <div className="space-y-2">
+                    <div className="flex items-center justify-between">
+                      <span className="font-mono font-bold text-slate-500 text-[11px]">{t.id}</span>
+                      <span className={`px-2.5 py-0.5 rounded-full text-[10px] font-bold ${
+                        t.priority === 'Urgent'
+                          ? 'bg-rose-50 text-rose-900 border border-rose-300'
+                          : 'bg-slate-100 text-slate-800 border border-slate-300'
+                      }`}>
+                        {t.priority} Priority
+                      </span>
+                    </div>
+
+                    <h3 className="font-bold text-sm text-slate-900 leading-snug">{t.title}</h3>
+                    <p className="text-xs text-slate-600 leading-relaxed">{t.description}</p>
+                    <div className="text-[11px] text-slate-500 pt-1">
+                      {t.unitNumber} • {t.tenantName}
+                    </div>
+
+                    {/* Timestamped Audit Trail */}
+                    {t.history && t.history.length > 0 && (
+                      <div className="pt-2 border-t border-slate-100 space-y-1">
+                        <div className="text-[10px] font-bold uppercase tracking-wider text-slate-400 flex items-center gap-1">
+                          <History className="w-3 h-3" />
+                          <span>Audit Trail Log:</span>
+                        </div>
+                        <ul className="space-y-1 text-[10px] text-slate-500">
+                          {t.history.map((h, idx) => (
+                            <li key={idx} className="flex items-start gap-1.5">
+                              <span className="font-mono text-slate-400 shrink-0">{h.timestamp}:</span>
+                              <span>{h.note}</span>
+                            </li>
+                          ))}
+                        </ul>
+                      </div>
+                    )}
+                  </div>
+
+                  <div className="pt-3 border-t border-slate-100 flex items-center justify-between text-xs">
+                    <span className={`px-2 py-0.5 rounded-md text-[10px] font-bold ${
+                      t.status === 'Resolved'
+                        ? 'bg-emerald-50 text-emerald-800 border border-emerald-300'
+                        : t.status === 'In Progress'
+                        ? 'bg-blue-50 text-blue-800 border border-blue-300'
+                        : 'bg-amber-50 text-amber-900 border border-amber-300'
+                    }`}>
+                      {t.status}
+                    </span>
+
+                    {roleMode === 'manager' && t.status !== 'Resolved' && (
+                      <div className="flex items-center gap-1.5">
+                        {t.status !== 'In Progress' && (
+                          <button
+                            type="button"
+                            onClick={() => handleUpdateTicketStatus(t.id, 'In Progress')}
+                            className="px-2 py-1 rounded bg-slate-100 hover:bg-slate-200 text-slate-700 text-[10px] font-semibold"
+                          >
+                            Start Work
+                          </button>
+                        )}
+                        <button
+                          type="button"
+                          onClick={() => handleUpdateTicketStatus(t.id, 'Resolved')}
+                          className="px-2 py-1 rounded bg-emerald-50 hover:bg-emerald-100 text-emerald-700 text-[10px] font-bold border border-emerald-200"
+                        >
+                          Resolve
+                        </button>
+                      </div>
+                    )}
+                  </div>
+                </article>
+              ))}
+            </div>
+          </section>
+        )}
+
+        {/* ======================= TAB 4: BROADCAST NOTICES ======================= */}
+        {activeTab === 'notices' && (
+          <section className="space-y-4 no-print">
+            <div className="flex items-center justify-between">
+              <h2 className="text-base font-bold text-slate-900">Tenant Bulletins & Community Notices</h2>
+              {roleMode === 'manager' && (
+                <button
+                  type="button"
+                  onClick={() => setIsNewNoticeOpen(true)}
+                  aria-label="Create broadcast notice"
+                  className="px-3 py-1.5 rounded-lg bg-blue-600 hover:bg-blue-700 text-white font-semibold text-xs flex items-center gap-1.5 shadow-xs"
+                >
+                  <Plus className="w-3.5 h-3.5 stroke-[3]" />
+                  <span>Dispatch Notice</span>
+                </button>
+              )}
+            </div>
+
+            <div className="space-y-3">
+              {notices.map(n => (
+                <article key={n.id} className="p-5 rounded-2xl bg-white border border-slate-200 shadow-xs space-y-2">
+                  <div className="flex items-center justify-between">
+                    <span className="font-mono text-[11px] font-bold text-blue-700">{n.id} • {n.date}</span>
+                    <span className="px-2 py-0.5 rounded-md text-[10px] font-bold bg-slate-100 text-slate-700">
+                      Target: {n.target}
+                    </span>
+                  </div>
+                  <h3 className="font-bold text-base text-slate-900">{n.title}</h3>
+                  <p className="text-xs text-slate-600 leading-relaxed">{n.body}</p>
+                </article>
+              ))}
+            </div>
+          </section>
+        )}
+      </main>
+
+      {/* ======================= MODAL / PRINT VIEW: OFFICIAL RENT RECEIPT ======================= */}
+      {selectedReceipt && (
+        <div
+          role="dialog"
+          aria-modal="true"
+          aria-label="Official Rent Receipt"
+          className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/50 backdrop-blur-xs p-4"
+        >
+          <div className="bg-white rounded-2xl max-w-lg w-full p-6 sm:p-8 shadow-2xl border border-slate-200 space-y-6 text-xs print-area">
+            {/* Header */}
+            <div className="flex items-start justify-between pb-4 border-b-2 border-slate-900">
+              <div>
+                <div className="text-lg font-black text-slate-900 tracking-tight font-display">
+                  ESTATEFLOW PROPERTIES
+                </div>
+                <div className="text-slate-500 text-[11px]">Official Rent Remittance Receipt</div>
+                <div className="text-slate-500 text-[11px]">Nordic Property Partners LLC</div>
+              </div>
+              <div className="text-right">
+                <div className="font-mono font-bold text-slate-900 text-sm">{selectedReceipt.id}</div>
+                <div className="text-slate-500 text-[11px]">Date: {selectedReceipt.date}</div>
+                <span className="inline-block mt-1 px-2.5 py-0.5 rounded-md text-[10px] font-bold bg-emerald-50 text-emerald-800 border border-emerald-300">
+                  PAYMENT CLEARED
+                </span>
+              </div>
+            </div>
+
+            {/* Receipt Details Grid */}
+            <div className="p-4 rounded-xl bg-slate-50 border border-slate-200 grid grid-cols-2 gap-4">
+              <div>
+                <span className="text-[10px] uppercase font-bold text-slate-400 block mb-0.5">RECEIVED FROM</span>
+                <div className="font-bold text-slate-900 text-sm">{selectedReceipt.tenantName}</div>
+                <div className="text-slate-600">{selectedReceipt.unitNumber}</div>
+              </div>
+              <div className="text-right">
+                <span className="text-[10px] uppercase font-bold text-slate-400 block mb-0.5">AMOUNT PAID</span>
+                <div className="text-xl font-black font-mono text-slate-900">
+                  ${selectedReceipt.amount.toLocaleString(undefined, { minimumFractionDigits: 2 })}
+                </div>
+                <div className="text-[11px] text-slate-500">Period: {selectedReceipt.period}</div>
+              </div>
+            </div>
+
+            <div className="space-y-1.5 text-slate-600 text-[11px]">
+              <div><strong>Payment Method:</strong> {selectedReceipt.method}</div>
+              <div><strong>Authorization:</strong> Electronic Verification Validated (No signature required)</div>
+            </div>
+
+            <div className="pt-4 border-t border-slate-200 flex items-center justify-between no-print">
+              <button
+                type="button"
+                onClick={() => setSelectedReceipt(null)}
+                className="px-4 py-2 rounded-xl bg-slate-100 hover:bg-slate-200 text-slate-700 font-semibold"
+              >
+                Close Receipt
               </button>
               <button
+                type="button"
                 onClick={() => window.print()}
-                className="px-5 py-2 rounded-xl bg-amber-400 hover:bg-amber-300 text-slate-950 text-xs font-bold flex items-center gap-2 shadow-lg shadow-amber-400/20"
+                className="px-4 py-2 rounded-xl bg-slate-900 hover:bg-slate-800 text-white font-bold flex items-center gap-1.5 shadow-xs"
               >
                 <Printer className="w-4 h-4" />
-                <span>Print Official Receipt</span>
+                <span>Print / Save PDF</span>
               </button>
             </div>
           </div>
         </div>
       )}
 
-      {/* ======================= MODAL: RECORD RENT ======================= */}
+      {/* ======================= MODAL: RECORD RENT PAYMENT ======================= */}
       {isRecordPaymentOpen && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/85 backdrop-blur-md">
-          <div className="bg-slate-900 border border-slate-800 rounded-3xl max-w-md w-full p-6 shadow-2xl relative">
-            <button
-              onClick={() => setIsRecordPaymentOpen(false)}
-              className="absolute top-4 right-4 p-2 rounded-full bg-slate-800 text-slate-400 hover:text-white"
-            >
-              <X className="w-5 h-5" />
-            </button>
-
-            <div className="flex items-center gap-3 mb-5">
-              <div className="p-3 rounded-2xl bg-emerald-500/20 text-emerald-400">
-                <DollarSign className="w-6 h-6" />
+        <div
+          role="dialog"
+          aria-modal="true"
+          aria-label="Record Rent Payment"
+          className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/50 backdrop-blur-xs p-4 no-print"
+        >
+          <div className="bg-white rounded-2xl max-w-md w-full p-6 shadow-2xl border border-slate-200 space-y-4 text-xs">
+            <div className="flex items-center justify-between pb-3 border-b border-slate-100">
+              <div className="flex items-center gap-2">
+                <CreditCard className="w-4 h-4 text-blue-600" />
+                <h2 className="font-bold text-sm text-slate-900">Record Rent Payment</h2>
               </div>
-              <div>
-                <h3 className="text-lg font-bold text-white">Record Rent Remittance</h3>
-                <p className="text-xs text-slate-400">Generate receipt and update lease arrears</p>
-              </div>
+              <span className="text-[10px] font-bold text-amber-700 bg-amber-50 border border-amber-200 px-2 py-0.5 rounded-md">
+                DEMO SIMULATOR
+              </span>
             </div>
 
-            <form onSubmit={handleRecordPayment} className="space-y-4 text-xs">
+            <form onSubmit={handleRecordPayment} className="space-y-3">
               <div>
-                <label className="block text-slate-400 mb-1">Target Unit</label>
+                <label htmlFor="ef-payment-unit" className="block text-slate-600 font-medium mb-1">
+                  Target Leased Unit
+                </label>
                 <select
+                  id="ef-payment-unit"
                   value={paymentForm.unitId}
                   onChange={e => setPaymentForm({ ...paymentForm, unitId: e.target.value })}
-                  className="w-full px-3 py-2 rounded-xl bg-slate-950 border border-slate-800 text-slate-200"
+                  className="w-full px-3 py-2 rounded-lg bg-slate-50 border border-slate-200 text-slate-900"
                 >
-                  {units
-                    .filter(u => u.status === 'Occupied')
-                    .map(u => (
-                      <option key={u.id} value={u.id}>
-                        {u.unitNumber} - {u.tenant?.name} (${u.monthlyRent}/mo)
-                      </option>
-                    ))}
+                  {units.filter(u => u.status === 'Occupied').map(u => (
+                    <option key={u.id} value={u.id}>
+                      {u.unitNumber} — {u.tenant ? u.tenant.name : 'Unknown'} (${u.monthlyRent}/mo)
+                    </option>
+                  ))}
                 </select>
               </div>
 
               <div>
-                <label className="block text-slate-400 mb-1">Amount ($)</label>
+                <label htmlFor="ef-payment-amount" className="block text-slate-600 font-medium mb-1">
+                  Payment Amount ($) *
+                </label>
                 <input
+                  id="ef-payment-amount"
                   type="number"
+                  min="1"
+                  required
                   value={paymentForm.amount}
                   onChange={e => setPaymentForm({ ...paymentForm, amount: e.target.value })}
-                  className="w-full px-3 py-2 rounded-xl bg-slate-950 border border-slate-800 text-slate-200 font-mono"
-                  required
+                  className="w-full px-3 py-2 rounded-lg bg-slate-50 border border-slate-200 text-slate-900 font-mono"
                 />
               </div>
 
               <div>
-                <label className="block text-slate-400 mb-1">Rental Period</label>
+                <label htmlFor="ef-payment-method" className="block text-slate-600 font-medium mb-1">
+                  Remittance Channel
+                </label>
+                <select
+                  id="ef-payment-method"
+                  value={paymentForm.method}
+                  onChange={e => setPaymentForm({ ...paymentForm, method: e.target.value })}
+                  className="w-full px-3 py-2 rounded-lg bg-slate-50 border border-slate-200 text-slate-900"
+                >
+                  <option value="Bank ACH Direct">Bank ACH Direct Deposit</option>
+                  <option value="Wire Remittance">Domestic / Wire Transfer</option>
+                  <option value="Debit Card Online">Debit Card Electronic Checkout</option>
+                  <option value="Cash Deposit">Property Management Cash Escrow</option>
+                </select>
+              </div>
+
+              <div>
+                <label htmlFor="ef-payment-period" className="block text-slate-600 font-medium mb-1">
+                  Billing Period
+                </label>
                 <input
+                  id="ef-payment-period"
                   type="text"
                   value={paymentForm.period}
                   onChange={e => setPaymentForm({ ...paymentForm, period: e.target.value })}
-                  className="w-full px-3 py-2 rounded-xl bg-slate-950 border border-slate-800 text-slate-200"
+                  className="w-full px-3 py-2 rounded-lg bg-slate-50 border border-slate-200 text-slate-900"
                 />
               </div>
 
-              <div>
-                <label className="block text-slate-400 mb-1">Payment Method / Channel</label>
-                <input
-                  type="text"
-                  value={paymentForm.method}
-                  onChange={e => setPaymentForm({ ...paymentForm, method: e.target.value })}
-                  className="w-full px-3 py-2 rounded-xl bg-slate-950 border border-slate-800 text-slate-200"
-                />
-              </div>
-
-              <div className="pt-3 flex items-center justify-end gap-3">
+              <div className="flex items-center gap-2 pt-2">
                 <button
                   type="button"
                   onClick={() => setIsRecordPaymentOpen(false)}
-                  className="px-4 py-2 text-slate-400 hover:text-white"
+                  className="flex-1 py-2.5 rounded-xl bg-slate-100 hover:bg-slate-200 text-slate-700 font-semibold"
                 >
                   Cancel
                 </button>
                 <button
                   type="submit"
-                  className="px-5 py-2.5 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white font-bold"
+                  className="flex-1 py-2.5 rounded-xl bg-blue-600 hover:bg-blue-700 text-white font-bold"
                 >
-                  Confirm & Generate Receipt
+                  Confirm & Clear
                 </button>
               </div>
             </form>
@@ -912,93 +922,107 @@ export default function App() {
         </div>
       )}
 
-      {/* ======================= MODAL: SUBMIT TICKET ======================= */}
+      {/* ======================= MODAL: SUBMIT MAINTENANCE TICKET ======================= */}
       {isSubmitTicketOpen && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/85 backdrop-blur-md">
-          <div className="bg-slate-900 border border-slate-800 rounded-3xl max-w-md w-full p-6 shadow-2xl relative">
-            <button
-              onClick={() => setIsSubmitTicketOpen(false)}
-              className="absolute top-4 right-4 p-2 rounded-full bg-slate-800 text-slate-400 hover:text-white"
-            >
-              <X className="w-5 h-5" />
-            </button>
-
-            <div className="flex items-center gap-3 mb-5">
-              <div className="p-3 rounded-2xl bg-amber-400/20 text-amber-400">
-                <Wrench className="w-6 h-6" />
+        <div
+          role="dialog"
+          aria-modal="true"
+          aria-label="Submit Maintenance Request"
+          className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/50 backdrop-blur-xs p-4 no-print"
+        >
+          <div className="bg-white rounded-2xl max-w-md w-full p-6 shadow-2xl border border-slate-200 space-y-4 text-xs">
+            <div className="flex items-center justify-between pb-3 border-b border-slate-100">
+              <div className="flex items-center gap-2">
+                <Wrench className="w-4 h-4 text-blue-600" />
+                <h2 className="font-bold text-sm text-slate-900">Report Maintenance Issue</h2>
               </div>
-              <div>
-                <h3 className="text-lg font-bold text-white">Log Maintenance Request</h3>
-                <p className="text-xs text-slate-400">Direct dispatch to estate technicians</p>
-              </div>
+              <button
+                type="button"
+                onClick={() => setIsSubmitTicketOpen(false)}
+                aria-label="Close dialog"
+                className="text-slate-400 hover:text-slate-700"
+              >
+                <X className="w-5 h-5" />
+              </button>
             </div>
 
-            <form onSubmit={handleSubmitTicket} className="space-y-4 text-xs">
+            <form onSubmit={handleSubmitTicket} className="space-y-3">
+              <div>
+                <label htmlFor="ef-ticket-title" className="block text-slate-600 font-medium mb-1">
+                  Issue Summary *
+                </label>
+                <input
+                  id="ef-ticket-title"
+                  type="text"
+                  required
+                  placeholder="e.g. Kitchen sink faucet dripping"
+                  value={ticketForm.title}
+                  onChange={e => setTicketForm({ ...ticketForm, title: e.target.value })}
+                  className="w-full px-3 py-2 rounded-lg bg-slate-50 border border-slate-200 text-slate-900"
+                />
+              </div>
+
               <div className="grid grid-cols-2 gap-3">
                 <div>
-                  <label className="block text-slate-400 mb-1">Issue Category</label>
+                  <label htmlFor="ef-ticket-category" className="block text-slate-600 font-medium mb-1">
+                    Category
+                  </label>
                   <select
+                    id="ef-ticket-category"
                     value={ticketForm.category}
                     onChange={e => setTicketForm({ ...ticketForm, category: e.target.value })}
-                    className="w-full px-3 py-2 rounded-xl bg-slate-950 border border-slate-800 text-slate-200"
+                    className="w-full px-3 py-2 rounded-lg bg-slate-50 border border-slate-200 text-slate-900"
                   >
                     <option value="Plumbing">Plumbing</option>
                     <option value="Electrical">Electrical</option>
-                    <option value="Carpentry">Carpentry</option>
-                    <option value="HVAC">Air Conditioning / HVAC</option>
-                    <option value="Security">Locks & Security</option>
+                    <option value="Carpentry">Carpentry & Locks</option>
+                    <option value="HVAC">Heating / AC</option>
                   </select>
                 </div>
+
                 <div>
-                  <label className="block text-slate-400 mb-1">Urgency</label>
+                  <label htmlFor="ef-ticket-priority" className="block text-slate-600 font-medium mb-1">
+                    Priority
+                  </label>
                   <select
+                    id="ef-ticket-priority"
                     value={ticketForm.priority}
                     onChange={e => setTicketForm({ ...ticketForm, priority: e.target.value })}
-                    className="w-full px-3 py-2 rounded-xl bg-slate-950 border border-slate-800 text-slate-200"
+                    className="w-full px-3 py-2 rounded-lg bg-slate-50 border border-slate-200 text-slate-900"
                   >
                     <option value="Normal">Normal</option>
-                    <option value="Urgent">Urgent (Within 24h)</option>
-                    <option value="Emergency">Emergency (Immediate)</option>
+                    <option value="Urgent">Urgent</option>
                   </select>
                 </div>
               </div>
 
               <div>
-                <label className="block text-slate-400 mb-1">Short Headline</label>
-                <input
-                  type="text"
-                  placeholder="e.g. Master bedroom shower leaking"
-                  value={ticketForm.title}
-                  onChange={e => setTicketForm({ ...ticketForm, title: e.target.value })}
-                  className="w-full px-3 py-2 rounded-xl bg-slate-950 border border-slate-800 text-slate-200"
-                  required
-                />
-              </div>
-
-              <div>
-                <label className="block text-slate-400 mb-1">Detailed Description</label>
+                <label htmlFor="ef-ticket-desc" className="block text-slate-600 font-medium mb-1">
+                  Detailed Description
+                </label>
                 <textarea
-                  rows={3}
-                  placeholder="Describe when the issue began and any access instructions for the technician..."
+                  id="ef-ticket-desc"
+                  rows="3"
+                  placeholder="Describe location, symptoms, and urgency..."
                   value={ticketForm.description}
                   onChange={e => setTicketForm({ ...ticketForm, description: e.target.value })}
-                  className="w-full px-3 py-2 rounded-xl bg-slate-950 border border-slate-800 text-slate-200"
+                  className="w-full px-3 py-2 rounded-lg bg-slate-50 border border-slate-200 text-slate-900"
                 />
               </div>
 
-              <div className="pt-3 flex items-center justify-end gap-3">
+              <div className="flex items-center gap-2 pt-2">
                 <button
                   type="button"
                   onClick={() => setIsSubmitTicketOpen(false)}
-                  className="px-4 py-2 text-slate-400 hover:text-white"
+                  className="flex-1 py-2.5 rounded-xl bg-slate-100 hover:bg-slate-200 text-slate-700 font-semibold"
                 >
                   Cancel
                 </button>
                 <button
                   type="submit"
-                  className="px-5 py-2.5 rounded-xl bg-amber-400 hover:bg-amber-300 text-slate-950 font-bold"
+                  className="flex-1 py-2.5 rounded-xl bg-blue-600 hover:bg-blue-700 text-white font-bold"
                 >
-                  Submit Maintenance Ticket
+                  Submit Work Order
                 </button>
               </div>
             </form>
@@ -1008,91 +1032,104 @@ export default function App() {
 
       {/* ======================= MODAL: ONBOARD TENANT ======================= */}
       {isOnboardTenantOpen && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/85 backdrop-blur-md">
-          <div className="bg-slate-900 border border-slate-800 rounded-3xl max-w-md w-full p-6 shadow-2xl relative">
-            <button
-              onClick={() => setIsOnboardTenantOpen(false)}
-              className="absolute top-4 right-4 p-2 rounded-full bg-slate-800 text-slate-400 hover:text-white"
-            >
-              <X className="w-5 h-5" />
-            </button>
-
-            <div className="flex items-center gap-3 mb-5">
-              <div className="p-3 rounded-2xl bg-amber-400/20 text-amber-400">
-                <Users className="w-6 h-6" />
+        <div
+          role="dialog"
+          aria-modal="true"
+          aria-label="Onboard Tenant"
+          className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/50 backdrop-blur-xs p-4 no-print"
+        >
+          <div className="bg-white rounded-2xl max-w-md w-full p-6 shadow-2xl border border-slate-200 space-y-4 text-xs">
+            <div className="flex items-center justify-between pb-3 border-b border-slate-100">
+              <div className="flex items-center gap-2">
+                <UserCheck className="w-4 h-4 text-blue-600" />
+                <h2 className="font-bold text-sm text-slate-900">Onboard New Tenant</h2>
               </div>
-              <div>
-                <h3 className="text-lg font-bold text-white">Execute Lease & Onboard Tenant</h3>
-                <p className="text-xs text-slate-400">Assign resident to property unit</p>
-              </div>
+              <button
+                type="button"
+                onClick={() => setIsOnboardTenantOpen(false)}
+                aria-label="Close onboard dialog"
+                className="text-slate-400 hover:text-slate-700"
+              >
+                <X className="w-5 h-5" />
+              </button>
             </div>
 
-            <form onSubmit={handleOnboardTenant} className="space-y-4 text-xs">
+            <form onSubmit={handleOnboardTenant} className="space-y-3">
               <div>
-                <label className="block text-slate-400 mb-1">Select Unit</label>
+                <label htmlFor="ef-onboard-unit" className="block text-slate-600 font-medium mb-1">
+                  Assign Unit
+                </label>
                 <select
+                  id="ef-onboard-unit"
                   value={onboardForm.unitId}
                   onChange={e => setOnboardForm({ ...onboardForm, unitId: e.target.value })}
-                  className="w-full px-3 py-2 rounded-xl bg-slate-950 border border-slate-800 text-slate-200"
+                  className="w-full px-3 py-2 rounded-lg bg-slate-50 border border-slate-200 text-slate-900"
                 >
-                  {units
-                    .filter(u => u.status === 'Vacant')
-                    .map(u => (
-                      <option key={u.id} value={u.id}>
-                        {u.unitNumber} - {u.type} (${u.monthlyRent}/mo)
-                      </option>
-                    ))}
+                  {units.map(u => (
+                    <option key={u.id} value={u.id}>
+                      {u.unitNumber} ({u.estateName})
+                    </option>
+                  ))}
                 </select>
               </div>
 
               <div>
-                <label className="block text-slate-400 mb-1">Tenant Full Name</label>
+                <label htmlFor="ef-onboard-name" className="block text-slate-600 font-medium mb-1">
+                  Tenant Full Name *
+                </label>
                 <input
+                  id="ef-onboard-name"
                   type="text"
-                  placeholder="e.g. Dennis K. Munene"
+                  required
+                  placeholder="e.g. Rachel Sterling"
                   value={onboardForm.name}
                   onChange={e => setOnboardForm({ ...onboardForm, name: e.target.value })}
-                  className="w-full px-3 py-2 rounded-xl bg-slate-950 border border-slate-800 text-slate-200"
-                  required
+                  className="w-full px-3 py-2 rounded-lg bg-slate-50 border border-slate-200 text-slate-900"
                 />
               </div>
 
               <div className="grid grid-cols-2 gap-3">
                 <div>
-                  <label className="block text-slate-400 mb-1">Tenant Phone</label>
+                  <label htmlFor="ef-onboard-phone" className="block text-slate-600 font-medium mb-1">
+                    Phone
+                  </label>
                   <input
+                    id="ef-onboard-phone"
                     type="tel"
-                    placeholder="+254 712 345 678"
+                    placeholder="+1 (555) 019-2834"
                     value={onboardForm.phone}
                     onChange={e => setOnboardForm({ ...onboardForm, phone: e.target.value })}
-                    className="w-full px-3 py-2 rounded-xl bg-slate-950 border border-slate-800 text-slate-200"
-                    required
+                    className="w-full px-3 py-2 rounded-lg bg-slate-50 border border-slate-200 text-slate-900"
                   />
                 </div>
                 <div>
-                  <label className="block text-slate-400 mb-1">Security Deposit ($)</label>
+                  <label htmlFor="ef-onboard-email" className="block text-slate-600 font-medium mb-1">
+                    Email
+                  </label>
                   <input
-                    type="number"
-                    value={onboardForm.deposit}
-                    onChange={e => setOnboardForm({ ...onboardForm, deposit: e.target.value })}
-                    className="w-full px-3 py-2 rounded-xl bg-slate-950 border border-slate-800 text-slate-200"
+                    id="ef-onboard-email"
+                    type="email"
+                    placeholder="tenant@domain.com"
+                    value={onboardForm.email}
+                    onChange={e => setOnboardForm({ ...onboardForm, email: e.target.value })}
+                    className="w-full px-3 py-2 rounded-lg bg-slate-50 border border-slate-200 text-slate-900"
                   />
                 </div>
               </div>
 
-              <div className="pt-3 flex items-center justify-end gap-3">
+              <div className="flex items-center gap-2 pt-2">
                 <button
                   type="button"
                   onClick={() => setIsOnboardTenantOpen(false)}
-                  className="px-4 py-2 text-slate-400 hover:text-white"
+                  className="flex-1 py-2.5 rounded-xl bg-slate-100 hover:bg-slate-200 text-slate-700 font-semibold"
                 >
                   Cancel
                 </button>
                 <button
                   type="submit"
-                  className="px-5 py-2.5 rounded-xl bg-amber-400 hover:bg-amber-300 text-slate-950 font-bold"
+                  className="flex-1 py-2.5 rounded-xl bg-blue-600 hover:bg-blue-700 text-white font-bold"
                 >
-                  Finalize Lease Agreement
+                  Complete Lease
                 </button>
               </div>
             </form>
@@ -1100,76 +1137,65 @@ export default function App() {
         </div>
       )}
 
-      {/* ======================= MODAL: NEW NOTICE ======================= */}
+      {/* ======================= MODAL: DISPATCH NOTICE ======================= */}
       {isNewNoticeOpen && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/85 backdrop-blur-md">
-          <div className="bg-slate-900 border border-slate-800 rounded-3xl max-w-md w-full p-6 shadow-2xl relative">
-            <button
-              onClick={() => setIsNewNoticeOpen(false)}
-              className="absolute top-4 right-4 p-2 rounded-full bg-slate-800 text-slate-400 hover:text-white"
-            >
-              <X className="w-5 h-5" />
-            </button>
-
-            <div className="flex items-center gap-3 mb-5">
-              <div className="p-3 rounded-2xl bg-amber-400/20 text-amber-400">
-                <Bell className="w-6 h-6" />
+        <div
+          role="dialog"
+          aria-modal="true"
+          aria-label="Dispatch Notice"
+          className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/50 backdrop-blur-xs p-4 no-print"
+        >
+          <div className="bg-white rounded-2xl max-w-md w-full p-6 shadow-2xl border border-slate-200 space-y-4 text-xs">
+            <div className="flex items-center justify-between pb-3 border-b border-slate-100">
+              <div className="flex items-center gap-2">
+                <Bell className="w-4 h-4 text-blue-600" />
+                <h2 className="font-bold text-sm text-slate-900">Broadcast Notice</h2>
               </div>
-              <div>
-                <h3 className="text-lg font-bold text-white">Broadcast Community Notice</h3>
-                <p className="text-xs text-slate-400">Publish update to tenant portals</p>
-              </div>
+              <span className="text-[10px] font-bold text-amber-700 bg-amber-50 border border-amber-200 px-2 py-0.5 rounded-md">
+                SIMULATOR
+              </span>
             </div>
 
-            <form onSubmit={handlePublishNotice} className="space-y-4 text-xs">
+            <form onSubmit={handleCreateNotice} className="space-y-3">
               <div>
-                <label className="block text-slate-400 mb-1">Target Audience</label>
-                <select
-                  value={noticeForm.target}
-                  onChange={e => setNoticeForm({ ...noticeForm, target: e.target.value })}
-                  className="w-full px-3 py-2 rounded-xl bg-slate-950 border border-slate-800 text-slate-200"
-                >
-                  <option value="All Residents">All Residents</option>
-                  <option value="Crown Heights Enclave">Crown Heights Residents</option>
-                  <option value="Serene Palms Townhomes">Serene Palms Residents</option>
-                  <option value="Horizon Loft Suites">Horizon Loft Tenants</option>
-                </select>
-              </div>
-
-              <div>
-                <label className="block text-slate-400 mb-1">Title</label>
+                <label htmlFor="ef-notice-title" className="block text-slate-600 font-medium mb-1">
+                  Notice Subject *
+                </label>
                 <input
+                  id="ef-notice-title"
                   type="text"
-                  placeholder="e.g. Scheduled Generator Testing"
+                  required
+                  placeholder="e.g. Scheduled Power Maintenance"
                   value={noticeForm.title}
                   onChange={e => setNoticeForm({ ...noticeForm, title: e.target.value })}
-                  className="w-full px-3 py-2 rounded-xl bg-slate-950 border border-slate-800 text-slate-200"
-                  required
+                  className="w-full px-3 py-2 rounded-lg bg-slate-50 border border-slate-200 text-slate-900"
                 />
               </div>
 
               <div>
-                <label className="block text-slate-400 mb-1">Notice Body</label>
+                <label htmlFor="ef-notice-body" className="block text-slate-600 font-medium mb-1">
+                  Message Body
+                </label>
                 <textarea
-                  rows={3}
+                  id="ef-notice-body"
+                  rows="3"
                   value={noticeForm.body}
                   onChange={e => setNoticeForm({ ...noticeForm, body: e.target.value })}
-                  className="w-full px-3 py-2 rounded-xl bg-slate-950 border border-slate-800 text-slate-200"
-                  required
+                  className="w-full px-3 py-2 rounded-lg bg-slate-50 border border-slate-200 text-slate-900"
                 />
               </div>
 
-              <div className="pt-3 flex items-center justify-end gap-3">
+              <div className="flex items-center gap-2 pt-2">
                 <button
                   type="button"
                   onClick={() => setIsNewNoticeOpen(false)}
-                  className="px-4 py-2 text-slate-400 hover:text-white"
+                  className="flex-1 py-2.5 rounded-xl bg-slate-100 hover:bg-slate-200 text-slate-700 font-semibold"
                 >
                   Cancel
                 </button>
                 <button
                   type="submit"
-                  className="px-5 py-2.5 rounded-xl bg-amber-400 hover:bg-amber-300 text-slate-950 font-bold"
+                  className="flex-1 py-2.5 rounded-xl bg-blue-600 hover:bg-blue-700 text-white font-bold"
                 >
                   Broadcast Notice
                 </button>
@@ -1179,26 +1205,5 @@ export default function App() {
         </div>
       )}
     </div>
-  );
-}
-
-function ReceiptIcon(props) {
-  return (
-    <svg
-      {...props}
-      xmlns="http://www.w3.org/2000/svg"
-      width="24"
-      height="24"
-      viewBox="0 0 24 24"
-      fill="none"
-      stroke="currentColor"
-      strokeWidth="2"
-      strokeLinecap="round"
-      strokeLinejoin="round"
-    >
-      <path d="M4 2v20l2-1 2 1 2-1 2 1 2-1 2 1 2-1 2 1V2l-2 1-2-1-2 1-2-1-2 1-2-1-2 1Z" />
-      <path d="M16 8h-6a2 2 0 1 0 0 4h4a2 2 0 1 1 0 4H8" />
-      <path d="M12 17.5v-11" />
-    </svg>
   );
 }

@@ -2,19 +2,65 @@
 <html lang="en">
   <head>
     <meta charset="UTF-8" />
-    <link rel="icon" type="image/svg+xml" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='%236366f1'><path d='M12 3L2 12h3v8h6v-6h2v6h6v-8h3L12 3z'/></svg>" />
+    <link rel="icon" type="image/svg+xml" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='%232563EB'><path d='M12 3L2 12h3v8h6v-6h2v6h6v-8h3L12 3z'/></svg>" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="description" content="EstateFlow streamlines landlord and tenant workflows with real-time rent ledgers, unit occupancy tracking, printable receipts, and maintenance ticket logs." />
+    <meta name="robots" content="index, follow" />
+    <link rel="canonical" href="https://estateflow-property-management.vercel.app/" />
+
+    <!-- Open Graph -->
+    <meta property="og:title" content="EstateFlow — Landlord & Tenant Property Management Portal" />
+    <meta property="og:description" content="Modern property management software with live rent tracking, tenant onboarding, and automated receipts." />
+    <meta property="og:type" content="website" />
+    <meta property="og:url" content="https://estateflow-property-management.vercel.app/" />
+
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-    <link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@300;400;500;600;700;800&family=Cabinet+Grotesk:wght@700;800&display=swap" rel="stylesheet">
-    <title>EstateFlow | Property & Rental Management Portal</title>
+    <link rel="preload" as="style" href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800&family=Cabinet+Grotesk:wght@700;800&display=swap">
+    <link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800&family=Cabinet+Grotesk:wght@700;800&display=swap" rel="stylesheet" media="print" onload="this.media='all'">
+    <noscript>
+      <link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800&family=Cabinet+Grotesk:wght@700;800&display=swap" rel="stylesheet">
+    </noscript>
+
+    <title>EstateFlow — Property & Rental Management Portal</title>
+
+    <script type="application/ld+json">
+    {
+      "@context": "https://schema.org",
+      "@type": "SoftwareApplication",
+      "name": "EstateFlow",
+      "url": "https://estateflow-property-management.vercel.app/",
+      "description": "Property management and residential rental portal for landlords and tenants.",
+      "applicationCategory": "BusinessApplication",
+      "operatingSystem": "All"
+    }
+    </script>
+
     <style>
-      * {
-        font-family: 'Plus Jakarta Sans', sans-serif;
+      body {
+        font-family: 'Plus Jakarta Sans', system-ui, -apple-system, sans-serif;
+      }
+      .font-display {
+        font-family: 'Cabinet Grotesk', system-ui, -apple-system, sans-serif;
+      }
+      @media print {
+        body {
+          background: #ffffff !important;
+          color: #0f172a !important;
+        }
+        .no-print {
+          display: none !important;
+        }
+        .print-area {
+          box-shadow: none !important;
+          border: none !important;
+          margin: 0 !important;
+          padding: 0 !important;
+        }
       }
     </style>
   </head>
-  <body class="bg-slate-950 text-slate-100">
+  <body class="bg-[#F8FAFC] text-slate-900 antialiased selection:bg-blue-100 selection:text-blue-900">
     <div id="root"></div>
     <script type="module" src="/src/main.jsx"></script>
   </body>

@@ -1,0 +1,4 @@
+User-agent: *
+Allow: /
+
+Sitemap: https://estateflow-property-management.vercel.app/sitemap.xml
